@@ -7,9 +7,14 @@
 
 // CONFIG
 #define LOGGERID  1 // set this value from 0 to 65535
-#define FIX_MAX_TIME_S 90 //Max fix time in seconds, it will give up after this much time
-#define FIX_PERIOD_H_M_S  0, 10, 0 //Fix period (specify as "hours, minutes, seconds" need all three and the two commas!)
+#define FIX_MAX_TIME_S 400 // Max fix time in seconds, it will give up after this much time
+#define FIX_PERIOD_H_M_S  0, 10, 0 // Fix period (specify as "hours, minutes, seconds" need all three and the two commas!)
+#define LAST_N_FIXES_TO_TX  10 // The number of fixes to transmit (if this is 10 we would tx this fix and the last 9 fixes)
+#define TIMES_TO_TRANSMIT 2 // The number of times that we transmit the last N fixes every time we take a fix
+#define SHOW_MENU false // Show the menu or not - set to false for deployment
 // END CONFIG
+
+#define TX_LAST_N_FIXES() radioTxLastNFixes(recordCount-1, LAST_N_FIXES_TO_TX, TIMES_TO_TRANSMIT)
 
 #define LED 13
 #define Flash_CS 6
@@ -58,6 +63,7 @@ struct radiotx_t {
   uint16_t loggerId;
   fix_t fix;
   enum dropoffStatus_t dropoffStatus;
+  uint16_t fixIndex;
 };
 
 fix_t currentFix;
@@ -226,11 +232,13 @@ void showMenu () {
   const char menu[] = "\nArdui RI GPS V0.0.1\n"
   " 1. Print number of Fixes Stored in Flash\n"
   " 2. Print Flash storage remaining\n"
-  " 3. Print fix from index\n"
+  " 3. Print fix from index (3##.)\n"
   " 4. Save a new fake fix\n"
   " 5. Print all fixes\n"
   " g. Turn GPS on\n"
   " s. Turn GPS off\n"
+  " t. Tx fix (t##.)\n"
+  " z. Tx last N fixes\n"
   " ec. Erase Flash\n"
   " x. Exit menu\n"
   "> ";
@@ -269,14 +277,16 @@ void showMenu () {
             }
           }
           while (Serial.available() > 0) Serial.read();  //Flush buffer
-          int n = atoi(tmpStr);
-          if (n >= recordCount || n < 0) {
-            p("There is no fix at index %d.\n", n);
-            break;
+          if (tmpStr != "") {
+            int n = atoi(tmpStr);
+            if (n >= recordCount || n < 0) {
+              p("There is no fix at index %d.\n", n);
+              break;
+            }
+            p("Reading fix at index %d...\n", n);
+            readFixFromFlash(n, currentFix);
+            printFix(currentFix);
           }
-          p("Reading fix at index %d...\n", n);
-          readFixFromFlash(n, currentFix);
-          printFix(currentFix);
           break;
         }
           break;
@@ -306,6 +316,39 @@ void showMenu () {
             eraseFlash();
           }
           break;
+        case 't':
+        {
+          bool done = false;
+          charsRead = 0;
+          while (done == false) {
+            if (Serial.available() > 0) {
+              incomingByte = Serial.read();
+              if (incomingByte >= '0' && incomingByte <= '9') {
+                tmpStr[charsRead++] = incomingByte;
+              } else {
+                tmpStr[charsRead++] = '\0';
+                done = true;
+              }
+            }
+          }
+          while (Serial.available() > 0) Serial.read();  //Flush buffer
+          if (tmpStr != "") {
+            int n = atoi(tmpStr);
+            if (n >= recordCount || n < 0) {
+              p("There is no fix at index %d.\n", n);
+              break;
+            }
+            p("Sending fix at index %d...\n", n);
+            readFixFromFlash(n, currentFix);
+            printFix(currentFix);
+            radioTxFix(currentFix, n);
+          }
+          break;
+        }
+          break;
+        case 'z':
+          TX_LAST_N_FIXES();
+        break;
         default:
           Serial.print("Invalid selection.\n\n");
           break;
@@ -333,7 +376,6 @@ void setupFlash () {
   Serial.print(recordCount);
   Serial.print("\n");
 
-  showMenu();
   //printFix(currentFix);
 }
 
@@ -386,12 +428,58 @@ bool radioRxRaw (uint16_t timeoutMs, uint8_t* data, uint8_t* len, int8_t* rssi) 
   return true;
 }
 
-void radioTxFix (fix_t& fix) {
+void radioTxFix (fix_t& fix, uint16_t fixIndex) {
   radiotx_t rtx;
   rtx.loggerId = LOGGERID;
   rtx.fix = fix;
   rtx.dropoffStatus = dropoffStatus_normal;
+  rtx.fixIndex = fixIndex;
   radioTxRaw(&rtx, sizeof(rtx));
+}
+
+
+/*
+ * Say number of fixes is 5 (fox 0 to fix 4)
+ * recordCount is 5
+ * last_fix_id is 4
+ * fixes_to_transmit is 3
+ * 
+ * Want to tx fix 5, 4, and 3 (indexes 4, 3 and 2)
+ * last_fix_id - (fixes_to_transmit - 1)
+ * 
+ */
+
+ /*
+ * Say number of fixes is 5 (fox 0 to fix 4)
+ * recordCount is 5
+ * last_fix_id is 4
+ * fixes_to_transmit is 10
+ * 
+ * Want to tx fix 5, 4, and 3, 2, 1 (indexes 4, 3, 2, 1 and 0)
+ * last_fix_id - (fixes_to_transmit)
+ * 4 - (10)
+ * -1
+ */
+ 
+ /*
+ * Say number of fixes is 19 (fox 0 to fix 18)
+ * recordCount is 19
+ * last_fix_id is 18
+ * fixes_to_transmit is 10
+ * 
+ * Want to tx fix (indexes 18, 17, 16, 15, 14, 13, 12, 11, 10, 9)
+ * last_fix_id - (fixes_to_transmit - 1)
+ * 18-(10-1)
+ * 
+ */
+void radioTxLastNFixes(uint16_t last_fix_id, uint8_t fixes_to_transmit, uint8_t times_to_repeat) {
+//  radioTxLastNFixes(recordCount-1, LAST_N_FIXES_TO_TX, 1)
+  while (times_to_repeat--) {
+    for (int32_t i = last_fix_id; (i > ((int32_t)last_fix_id - (int32_t)fixes_to_transmit)) && (i >= 0); i--) {
+      readFixFromFlash(i, currentFix);
+      radioTxFix(currentFix, i);
+    }
+  }
 }
 
 void alarmMatch () {
@@ -421,9 +509,7 @@ bool takeFix () {
     gpsGetFix(currentFix);
     writeNewFixToFlash(currentFix);  // Save the new fix to flash.
     setRTCFromFix(currentFix);       // Update RTC time from fix.
-    radioTxFix(currentFix);          // Transmit the fix over the radio.
-    radioTxFix(currentFix);          // Transmit the fix over the radio.
-    radioTxFix(currentFix);          // Transmit the fix over the radio.
+    TX_LAST_N_FIXES();               // Transmit the last N fixes over the radio.
     //p("Got Fix in %u seconds!\n", rtc.getEpoch() - abortEpoch - FIX_MAX_TIME_S);
     //printFix(currentFix);
     //Serial.print("\n");
@@ -444,19 +530,26 @@ void blinkLed () {
 }
 
 void setup () {
+#if SHOW_MENU == true
   while (!Serial) {
     delay(1);
   }
   //gpsOn();
   Serial.print("Init\n");
+#endif
 
   setupRtc();
   setupRadio();
   setupFlash();
-  gpsOn();
+
+#if SHOW_MENU == true
+  showMenu();
   Serial.print("Starting.  USB serial will now be disconnected.");
   Serial.end();
   USBDevice.detach();
+#endif
+
+  gpsOn();
 }
 
 void sleepFor (uint8_t hours, uint8_t minutes, uint8_t seconds) {
