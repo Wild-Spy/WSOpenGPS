@@ -3,11 +3,12 @@
 #include <stdarg.h>
 #include <RH_RF95.h>
 #include <LowPower.h>
+//#include "LowPower.h"
 #include <RTCZero.h>
 
 // CONFIG
 #define LOGGERID  1 // set this value from 0 to 65535
-#define FIX_MAX_TIME_S 400 // Max fix time in seconds, it will give up after this much time
+#define FIX_MAX_TIME_S 10 // Max fix time in seconds, it will give up after this much time
 #define FIX_PERIOD_H_M_S  0, 10, 0 // Fix period (specify as "hours, minutes, seconds" need all three and the two commas!)
 #define LAST_N_FIXES_TO_TX  10 // The number of fixes to transmit (if this is 10 we would tx this fix and the last 9 fixes)
 #define TIMES_TO_TRANSMIT 2 // The number of times that we transmit the last N fixes every time we take a fix
@@ -559,6 +560,8 @@ void sleepFor (uint8_t hours, uint8_t minutes, uint8_t seconds) {
   rtc.setAlarmEpoch(alarmEpoch);
   rtc.enableAlarm(rtc.MATCH_HHMMSS);
   rtc.attachInterrupt(alarmMatch);
+  
+  //LowPower.standby();
 
   rtc.standbyMode();
 //  USBDevice.attach();
@@ -571,5 +574,15 @@ void sleepFor (uint8_t hours, uint8_t minutes, uint8_t seconds) {
 
 void loop () {
   takeFix();
+  flash.powerDown();
+  rf95.spiWrite(RH_RF95_REG_01_OP_MODE, RH_RF95_MODE_SLEEP);
+  gpsOff();
+  digitalWrite(0, LOW);
+  digitalWrite(1, LOW);
   sleepFor(FIX_PERIOD_H_M_S);
+  digitalWrite(0, HIGH);
+  digitalWrite(1, HIGH);
+  flash.powerUp();
+  rf95.setModeIdle();
+  gpsOn();
 }
