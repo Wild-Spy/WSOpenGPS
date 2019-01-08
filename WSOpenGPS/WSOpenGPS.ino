@@ -9,7 +9,7 @@
 // CONFIG
 #define LOGGERID  1 // set this value from 0 to 65535
 #define FIX_MAX_TIME_S 10 // Max fix time in seconds, it will give up after this much time
-#define FIX_PERIOD_H_M_S  0, 10, 0 // Fix period (specify as "hours, minutes, seconds" need all three and the two commas!)
+#define FIX_PERIOD_H_M_S  0, 0, 30 // Fix period (specify as "hours, minutes, seconds" need all three and the two commas!)
 #define LAST_N_FIXES_TO_TX  10 // The number of fixes to transmit (if this is 10 we would tx this fix and the last 9 fixes)
 #define TIMES_TO_TRANSMIT 2 // The number of times that we transmit the last N fixes every time we take a fix
 #define SHOW_MENU false // Show the menu or not - set to false for deployment
@@ -90,7 +90,20 @@ void pinStr( uint32_t ulPin, unsigned strength) // works like pinMode(), but to 
   PORT->Group[g_APinDescription[ulPin].ulPort].PINCFG[g_APinDescription[ulPin].ulPin].bit.DRVSTR = strength ;
 }
 
-void gpsOn () {
+void exitLowPowerMode () {
+  // Enable SPI pins
+  digitalWrite(22, LOW);
+  digitalWrite(23, LOW);
+  digitalWrite(24, LOW);
+  pinMode(22, INPUT);
+  pinMode(23, OUTPUT);
+  pinMode(24, OUTPUT);
+
+  SPI.begin();
+  flash.begin();
+  rf95.setModeIdle();
+
+  // Enable GPS power
   pinMode(15, OUTPUT);
   pinMode(16, OUTPUT);
   pinMode(17, OUTPUT);
@@ -106,12 +119,25 @@ void gpsOn () {
   digitalWrite(17, HIGH);
   digitalWrite(18, HIGH);
   digitalWrite(19, HIGH);
+
+  // Enable GPS tx and Rx
+  digitalWrite(0, LOW);
+  digitalWrite(1, LOW);
+  pinMode(0, INPUT);
+  pinMode(1, INPUT);
+
   gpsSerial.begin(9600);
+
+  flash.powerUp();
 }
 
-void gpsOff () {
+void enterLowPowerMode () {
+
+  rf95.sleep();
+  
   gpsSerial.end();
-  // ...
+  
+  // Turn off GPS Power
   digitalWrite(15, LOW);
   digitalWrite(16, LOW);
   digitalWrite(17, LOW);
@@ -122,8 +148,26 @@ void gpsOff () {
   pinMode(17, INPUT);
   pinMode(18, INPUT);
   pinMode(19, INPUT);
-  //pinMode(0, INPUT);
-  //pinMode(1, OUTPUT);
+  
+  flash.powerDown();
+
+  SPI.end();
+  // Disable all SPI pins (SCK, MISO, MOSI)
+//  digitalWrite(22, LOW);
+//  digitalWrite(23, LOW);
+//  digitalWrite(24, LOW);
+  pinMode(22, INPUT);
+  pinMode(23, INPUT);
+  pinMode(24, INPUT);
+
+
+  //flash.end();
+
+  // Disable GPS Tx and Rx pins
+  digitalWrite(0, LOW);
+  digitalWrite(1, LOW);
+  pinMode(0, INPUT);
+  pinMode(1, INPUT);  
 }
 
 /**
@@ -305,10 +349,10 @@ void showMenu () {
         }
           break;
         case 'g':
-          gpsOn();
+          exitLowPowerMode();
           break;
         case 's':
-          gpsOff();
+          enterLowPowerMode();
           break;  
         case 'x':
           return;
@@ -535,9 +579,24 @@ void setup () {
   while (!Serial) {
     delay(1);
   }
-  //gpsOn();
+  //exitLowPowerMode();
   Serial.print("Init\n");
 #endif
+
+  pinMode(14, INPUT);
+  pinMode(15, INPUT);
+  pinMode(16, INPUT);
+  pinMode(17, INPUT);
+  pinMode(18, INPUT);
+  pinMode(19, INPUT);
+  pinMode(12, INPUT);
+  pinMode(11, INPUT);
+  pinMode(10, INPUT);
+  pinMode(9, INPUT);
+  pinMode(6, INPUT);
+  pinMode(5, INPUT);
+  pinMode(21, INPUT);
+  pinMode(20, INPUT);
 
   setupRtc();
   setupRadio();
@@ -550,7 +609,7 @@ void setup () {
   USBDevice.detach();
 #endif
 
-  gpsOn();
+  exitLowPowerMode();
 }
 
 void sleepFor (uint8_t hours, uint8_t minutes, uint8_t seconds) {
@@ -561,10 +620,7 @@ void sleepFor (uint8_t hours, uint8_t minutes, uint8_t seconds) {
   rtc.enableAlarm(rtc.MATCH_HHMMSS);
   rtc.attachInterrupt(alarmMatch);
   
-  //LowPower.standby();
-
   rtc.standbyMode();
-//  USBDevice.attach();
 
   blinkLed();
   
@@ -574,15 +630,11 @@ void sleepFor (uint8_t hours, uint8_t minutes, uint8_t seconds) {
 
 void loop () {
   takeFix();
-  flash.powerDown();
-  rf95.spiWrite(RH_RF95_REG_01_OP_MODE, RH_RF95_MODE_SLEEP);
-  gpsOff();
-  digitalWrite(0, LOW);
-  digitalWrite(1, LOW);
+  //rf95.spiWrite(RH_RF95_REG_01_OP_MODE, RH_RF95_MODE_SLEEP);
+  enterLowPowerMode();
+
   sleepFor(FIX_PERIOD_H_M_S);
   digitalWrite(0, HIGH);
   digitalWrite(1, HIGH);
-  flash.powerUp();
-  rf95.setModeIdle();
-  gpsOn();
+  exitLowPowerMode();
 }
