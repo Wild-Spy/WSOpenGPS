@@ -42,7 +42,7 @@ struct fix_t {
   float flat;
   float flon;
   uint16_t HDOP;
-};
+} __attribute__((packed));
 
 struct radiotx_t {
   uint16_t loggerId;
@@ -61,6 +61,7 @@ void p (char *fmt, ... ) {
   va_start (args, fmt );
   vsnprintf(buf, 128, fmt, args);
   va_end (args);
+  Serial1.print(buf);
   Serial.print(buf);
 }
 
@@ -69,7 +70,7 @@ void pinStr( uint32_t ulPin, unsigned strength) // works like pinMode(), but to 
   // Handle the case the pin isn't usable as PIO
   if ( g_APinDescription[ulPin].ulPinType == PIO_NOT_A_PIN )
   {
-    Serial.print("Not a pin\n");
+    p("Not a pin\n");
     return ;
   }
   if (strength) strength = 1;      // set drive strength to either 0 or 1 copied
@@ -78,17 +79,20 @@ void pinStr( uint32_t ulPin, unsigned strength) // works like pinMode(), but to 
 
 void printFix (fix_t& fix) {
   p("Time: %02d-%02d-%04d at %02d:%02d:%02d\n", fix.day, fix.month, fix.year, fix.hour, fix.minute, fix.second);
-  Serial.print("Location: ");
+  p("Location: ");
+  Serial1.print(fix.flat, 6);
   Serial.print(fix.flat, 6);
-  Serial.print(", ");
+  p(", ");
+  Serial1.print(fix.flon, 6);
   Serial.print(fix.flon, 6);
-  Serial.print("\nHDOP: ");
+  p("\nHDOP: ");
+  Serial1.print(fix.HDOP/100.0);
   Serial.print(fix.HDOP/100.0);
-  Serial.print("\n");
+  p("\n");
 }
 
 void printRaidoTx (radiotx_t& rtx, int8_t rssi) {
-  Serial.print("\nReceived Fix\n");
+  p("\nReceived Fix\n");
   p("Logger: %u\n", rtx.loggerId);
   p("RSSI: %d dBm\n", rssi);
   p("Fix #: %u\n", rtx.fixIndex);
@@ -123,17 +127,20 @@ void setupRadio () {
   delay(10);
 
   while (!rf95.init()) {
-    Serial.println("LoRa radio init failed");
+    p("LoRa radio init failed\n");
     while (1);
   }
-  Serial.println("LoRa radio init OK!");
+  p("LoRa radio init OK!\n");
 
    // Defaults after init are 434.0MHz, modulation GFSK_Rb250Fd250, +13dbM
   if (!rf95.setFrequency(RF95_FREQ)) {
-    Serial.println("setFrequency failed");
+    p("setFrequency failed\n");
     while (1);
   }
-  Serial.print("Set Freq to: "); Serial.println(RF95_FREQ);
+  p("Set Freq to: "); 
+  Serial1.print(RF95_FREQ);
+  Serial.print(RF95_FREQ);
+  p("\n");
   
   // Defaults after init are 434.0MHz, 13dBm, Bw = 125 kHz, Cr = 4/5, Sf = 128chips/symbol, CRC on
  
@@ -171,7 +178,7 @@ bool radioRxFix (radiotx_t& rtx, int8_t& rssi) {
     //TODO: print the packet contents.
     for (uint8_t i = 0; i < 255; i++) {
 //      p("%02x", rxBuffer[i]);
-//      if (i % 16) Serial.print("\n");
+//      if (i % 16) serDualPrint("\n");
     }
     return false;
   }
@@ -209,7 +216,9 @@ void setup () {
     delay(1);
   }
 
-  Serial.print("Init\n");
+  Serial1.begin(9600);
+
+  p("Init\n");
 
   setupRtc();
   setupRadio();
@@ -236,5 +245,6 @@ void loop () {
   int8_t rssi = 127;
   if (radioRxFix(receivedData, rssi)) {
     printRaidoTx(receivedData, rssi);
+    delay(50);
   }
 }
