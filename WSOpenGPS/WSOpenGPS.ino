@@ -7,7 +7,7 @@
 #include <RTCZero.h>
 
 // CONFIG
-#define LOGGERID  1 // set this value from 0 to 65535
+#define LOGGERID  1 // set this value from 0 to 65535 
 #define FIX_MAX_TIME_S 90 // Max fix time in seconds, it will give up after this much time - was already set to 90
 #define FIX_PERIOD_H_M_S  0, 10, 0 // Fix period (specify as "hours, minutes, seconds" need all three and the two commas! e.g. 0, 10, 0 is setting it to take a fix every 10 minutes)
 #define LAST_N_FIXES_TO_TX  10 // The number of fixes to transmit (if this is 10 we would tx this fix and the last 9 fixes)
