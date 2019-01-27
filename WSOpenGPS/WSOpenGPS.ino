@@ -1,3 +1,6 @@
+// Buffer wasn't large enough for the GPS serial.  Wasn't getting date.
+#define SERIAL_BUFFER_SIZE 1024
+
 #include <SPIFlash.h>
 #include <TinyGPS.h>
 #include <stdarg.h>
@@ -7,9 +10,9 @@
 #include <RTCZero.h>
 
 // CONFIG
-#define LOGGERID  1 // set this value from 0 to 65535 
+#define LOGGERID  0 // set this value from 0 to 65535 
 #define FIX_MAX_TIME_S 120 // Max fix time in seconds, it will give up after this much time - was already set to 90
-#define FIX_PERIOD_H_M_S  0, 10, 0 // Fix period (specify as "hours, minutes, seconds" need all three and the two commas! e.g. 0, 10, 0 is setting it to take a fix every 10 minutes)
+#define FIX_PERIOD_H_M_S  0, 1, 0 // Fix period (specify as "hours, minutes, seconds" need all three and the two commas! e.g. 0, 10, 0 is setting it to take a fix every 10 minutes)
 #define LAST_N_FIXES_TO_TX  10 // The number of fixes to transmit (if this is 10 we would tx this fix and the last 9 fixes)
 #define TIMES_TO_TRANSMIT 2 // The number of times that we transmit the last N fixes every time we take a fix
 #define SHOW_MENU false // Show the menu or not - set to false for deployment
@@ -26,7 +29,7 @@
 #define RF95_FREQ 434.0
 
 RH_RF95 rf95(RFM95_CS, RFM95_INT);
-TinyGPS gps;
+TinyGPS* gps = new TinyGPS();
 SPIFlash flash(Flash_CS, &SPI);
 RTCZero rtc;
 
@@ -196,9 +199,9 @@ bool writeFixToFlash (uint32_t fixAddress, fix_t& fix) {
 }
 
 bool writeNewFixToFlash (fix_t& fix) {
-  if (writeFixToFlash(recordCount, fix) == false) return false;
+  writeFixToFlash(recordCount, fix);
   recordCount++;
-  return writeRecordCountToFlash(recordCount);
+  return writeRecordCountToFlash(recordCount+1);
 }
 
 void printFix (fix_t& fix) {
@@ -238,6 +241,7 @@ void showMenu () {
   " 5. Print all fixes\n"
   " g. Turn GPS on\n"
   " s. Turn GPS off\n"
+  " w. Take a fix (gps must be on)"
   " t. Tx fix (t##.)\n"
   " z. Tx last N fixes\n"
   " ec. Erase Flash\n"
@@ -309,7 +313,12 @@ void showMenu () {
           break;
         case 's':
           gpsOff();
-          break;  
+          break;
+        case 'w':
+          gpsGetFix(currentFix);
+          p("Reading fix at index %d...\n", 99);
+          takeFix(true);
+          break;
         case 'x':
           return;
         case 'e':
@@ -381,9 +390,22 @@ void setupFlash () {
 }
 
 void gpsGetFix (fix_t& fix) {
-  gps.f_get_position(&fix.flat, &fix.flon);
-  gps.crack_datetime(&fix.year, &fix.month, &fix.day, &fix.hour, &fix.minute, &fix.second);
-  fix.HDOP = gps.hdop();
+  float flat, flon;
+  int year;
+  byte month, day, hour, minute, second;
+  
+  gps->f_get_position(&flat, &flon);
+  gps->crack_datetime(&year, &month, &day, &hour, &minute, &second);
+
+  fix.year = year;
+  fix.month = month;
+  fix.day = day;
+  fix.hour = hour;
+  fix.minute = minute;
+  fix.second = second;
+  fix.flat = flat;
+  fix.flon = flon;  
+  fix.HDOP = gps->hdop();
 }
 
 void setupRadio () {
@@ -479,6 +501,7 @@ void radioTxLastNFixes(uint16_t last_fix_id, uint8_t fixes_to_transmit, uint8_t 
     for (int32_t i = last_fix_id; (i > ((int32_t)last_fix_id - (int32_t)fixes_to_transmit)) && (i >= 0); i--) {
       readFixFromFlash(i, currentFix);
       radioTxFix(currentFix, i);
+      delay(100);
     }
   }
 }
@@ -498,25 +521,38 @@ void setupRtc () {
   rtc.setY2kEpoch(0); // Set to 1/1/2000 00:00:00 default time.  All other times expressed in 
 }
 
-bool takeFix () {
+bool takeFix (uint8_t printToSer) {
   //Serial.print("Taking a fix...\n");
-  uint32_t abortEpoch = rtc.getEpoch() + FIX_MAX_TIME_S;
-
-  while (rtc.getEpoch() < abortEpoch) {
+  // Need to create new GPS instance to clear out old data!
+  gps = new TinyGPS();
+  uint32_t start_millis = millis();
+  //uint32_t abortEpoch = rtc.getEpoch() + FIX_MAX_TIME_S;
+  
+  unsigned long t_date, t_time;
+  while (millis() - start_millis < FIX_MAX_TIME_S * 1000UL) {
     if (!gpsSerial.available()) continue;
     int c = gpsSerial.read();
-    //Serial.write(c);
-    if (!(gps.encode(c) && gps.hdop() < MIN_HDOP_FOR_FIX)) continue;
+    if (printToSer) Serial.write(c);
+    if (!(gps->encode(c) && gps->hdop() < MIN_HDOP_FOR_FIX)) continue;
+    
+    // We miss some NMEA messages because the serial buffer isn't big enough.  
+    // Don't save fix unless we have the date also!!
+    gps->get_datetime(&t_date, &t_time);
+    if (t_date == 0L) continue;
+    
     gpsGetFix(currentFix);
     writeNewFixToFlash(currentFix);  // Save the new fix to flash.
     setRTCFromFix(currentFix);       // Update RTC time from fix.
     TX_LAST_N_FIXES();               // Transmit the last N fixes over the radio.
-    //p("Got Fix in %u seconds!\n", rtc.getEpoch() - abortEpoch - FIX_MAX_TIME_S);
-    //printFix(currentFix);
-    //Serial.print("\n");
+    
+    if (printToSer) {
+      printFix(currentFix);
+      Serial.print("\n");
+    }
     return true;
   }
-  //Serial.print("Timed out taking fix!\n");
+  
+  if (printToSer) Serial.print("Timed out taking fix!\n");
   return false;
 }
 
@@ -575,7 +611,7 @@ void sleepFor (uint8_t hours, uint8_t minutes, uint8_t seconds) {
 }
 
 void loop () {
-  takeFix();
+  takeFix(false);
   flash.powerDown();
   rf95.spiWrite(RH_RF95_REG_01_OP_MODE, RH_RF95_MODE_SLEEP);
   gpsOff();
